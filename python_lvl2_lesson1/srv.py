@@ -4,7 +4,163 @@
 import socket
 import sys
 import ipaddress
-import json
+import time
+
+from decorators import method_convert_data
+
+
+srv_response = {
+    'probe': {
+        'action': 'probe',
+    },
+    'quit': {
+        'action': 'quit'
+    },
+    '1xx': {
+        100: {
+            'response': 100,
+            'alert': 'base info'
+        },
+        101: {
+            'response': 101,
+            'alert': 'important info'
+        }
+    },
+    '2xx': {
+        200: {
+            'response': 200,
+            'alert': 'OK'
+        },
+        201: {
+            'response': 201,
+            'alert': 'created'
+        },
+        202: {
+            'response': 202,
+            'alert': 'accepted'
+        }
+    },
+    '4xx': {
+        400: {
+            'response': 400,
+            'error': 'wrong request'
+        },
+        401: {
+            'response': 401,
+            'error': 'not authorized'
+        },
+        402: {
+            'response': 402,
+            'error': 'incorrect login or password'
+        },
+        403: {
+            'response': 403,
+            'error': 'forbidden'
+        },
+        404: {
+            'response': 404,
+            'error': 'not found'
+        },
+        409: {
+            'response': 409,
+            'error': 'conflict'
+        },
+        410: {
+            'response': 410,
+            'error': 'offline'
+        }
+    },
+    '5xx': {
+        500: {
+            'response': 500,
+            'error': 'server error'
+        }
+    }
+}
+
+users_list = {
+    'igor': {
+        'passwd': '12345678',
+        'status': 'user',
+        'state': 'ofline'
+    },
+    'mania': {
+        'passwd': None,
+        'status': 'guest',
+        'state': 'ofline'
+    },
+    'vasia': {
+        'passwd': 'fdsHJ45',
+        'status': 'user',
+        'state': 'online'
+    },
+    'elena': {
+        'passwd': '123',
+        'status': 'user',
+        'state': 'ofline'
+    }
+}
+
+chats_list = {}
+
+class ServiceMessages:
+
+    def _authorization(self, data):
+        print(data)
+        if data['user']['account_name'] in users_list:
+            if data['user']['password'] == users_list[data['user']['account_name']]['passwd']:
+                return srv_response['2xx'][200]
+            elif data['user']['password'] == None:
+                return srv_response['4xx'][409]
+            else:
+                return srv_response['4xx'][402]
+        else:
+            user_data = {
+                'passwd': None,
+                'status': 'guest',
+                'state': 'online'
+            }
+            users_list[data['user']['account_name']] = user_data
+            print(users_list)
+            return srv_response['4xx'][401]
+
+
+    def _status_message(self, data):
+        print(data)
+        return srv_response['probe']
+
+
+    def _get_message(self, data):
+        destination = data['to']
+        if destination[0] == '#':
+            if destination in chats_list:
+                return srv_response['2xx'][200]
+
+        if destination in users_list:
+            if users_list[destination]['state'] == 'online':
+                return srv_response['2xx'][200]
+            elif users_list[destination]['state'] == 'ofline':
+                return srv_response['4xx'][410]
+            elif users_list[destination]['state'] == 'blocked':
+                return srv_response['4xx'][403]
+        return srv_response['4xx'][404]
+
+
+
+    @method_convert_data('utf-8')
+    def send_to_client(self, data):
+        srv_answer = srv_response['4xx'][400]
+        if data['action'] == 'presence':
+            srv_answer = self._status_message(data)
+        elif data['action'] == 'authenticate':
+            srv_answer = self._authorization(data)
+        elif data['action'] == 'msg':
+            srv_answer = self._get_message(data)
+
+        srv_answer['time'] = time.ctime(time.time())
+        return srv_answer
+
+#######################################################################################################################
 
 def check_ip(ip):
     '''Валидация ip адреса:
@@ -55,31 +211,23 @@ def cl_options(argv):
 
     return addr_port
 
-
-def modyfy_json(data):
-    '''Принемает json данные в байткоде, раскодирует их в utf-8,
-    применяет к строкам с ключами 'name' и 'surname' функцию title() стандартной библиотеки,
-    после чего возвращает измененные данные в байткоде с кодировкой utf-8'''
-    json_message = json.loads(data.decode('utf-8'))
-    for i in json_message:
-        i['name'] = i['name'].title()
-        i['surname'] = i['surname'].title()
-    return json.dumps(json_message).encode('utf-8')
+#######################################################################################################################
 
 def main():
     addr_port = cl_options(sys.argv)
     sock = create_socket(addr_port['addr'], addr_port['port'])
+    try:
+        conn, addr = sock.accept()
+        print('connected:', addr)
+    except socket.error:  # данных нет
+        print('!!!No data!!!')
 
-    conn, addr = sock.accept()
-    print('connected:', addr)
-
+    ser_message = ServiceMessages()
     while True:
         data = conn.recv(1024)
         if not data:
             break
-
-        modyfy_data = modyfy_json(data)
-        conn.send(modyfy_data)
+        conn.send(ser_message.send_to_client(data))
 
     conn.close()
 
